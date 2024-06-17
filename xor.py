@@ -69,7 +69,111 @@ def visualize_results(history, name):
     plt.legend(['Train acc', 'validation acc'], fontsize = 15)
     ax.set_xlabel('epoch', size=15)
     plt.savefig(f'{name}.png')
+
+class Base(object):
+    '''
+    object new class method resolution order
+    '''
+    def __init__(self, data, x_valid, y_valid, n_train, n_batch, nin=2, nout=1, lr = 0.001):
+        super(Base, self).__init__()
+        self._ntrain = n_train
+        self._nbatch = n_batch
+        self._data = data
+        self._valid = [x_valid, y_valid]
+        self._lr = lr
+        self._loss = nn.BCELoss()
+        self._optimizer = None # torch.optim.SGD(self.model.parameters(), lr = self._lr)
+        self._model = None
+
+    @property
+    def model(self):
+        return self._model
+
+    @property
+    def loss(self):
+        return self._loss
     
+    @property
+    def optimizer(self):
+        return self._optimizer
+
+    @property
+    def data(self):
+        return self._data, self._valid[0], self._valid[1], self._ntrain, self._nbatch
+    
+class NoHidden1(Base):
+    def __init__(self, data, x_valid, y_valid, n_train, n_batch, nin=2, nout=1, lr = 0.001):
+        super(NoHidden1, self).__init__(
+            data, x_valid, y_valid, n_train, n_batch, nin, nout, lr
+        )
+        self._model = nn.Sequential(nn.Linear(nin,nout), nn.Sigmoid())
+        self._optimizer = torch.optim.SGD(self.model.parameters(), lr = lr)
+
+class TwoHiddenLayers1(Base):
+    def __init__(self, data, x_valid, y_valid, n_train, n_batch, nin=2, nout=1, lr = 0.001):
+        super(TwoHiddenLayers1, self).__init__(
+            data, x_valid, y_valid, n_train, n_batch, nin, nout, lr
+        )
+        self._model = nn.Sequential(
+                        nn.Linear(nin,4),
+                        nn.ReLU(),
+                        nn.Linear(4,4),
+                        nn.ReLU(),
+                        nn.Linear(4,nout),
+                        nn.Sigmoid()
+                      )
+        self._optimizer = torch.optim.SGD(self.model.parameters(), lr = lr)
+
+class NoisyLinear(nn.Module):
+    def __init__(self, nin=2, nout=1, nstd=0.1):
+        super(NoisyLinear, self).__init__()
+        w = torch.Tensor(nin, nout)
+        self.w= nn.Parameter(w)
+        nn.init.xavier_uniform_(self.w)
+        b=torch.Tensor(nout).fill_(0)
+        self.b = nn.Parameter(b)
+        self.noise_stddev = nstd
+
+    def forward(self, x, training=False):
+        if training:
+            noise = torch.normal(0.0, self.noise_stddev, x.shape)
+            x_new = torch.add(x, noise)
+        else:
+            x_new = x
+        return torch.add(torch.mm(x_new, self.w), self.b)
+
+class MyNoisyModule(nn.Module):
+    def __init__(self):
+        super(MyNoisyModule, self).__init__()
+        self.l1 = NoisyLinear(2,4,0.07)
+        self.a1 = nn.ReLU()
+        self.l2 = nn.Linear(4,4)
+        self.a2 = nn.ReLU()
+        self.l3 = nn.Linear(4,1)
+        self.a3 = nn.Sigmoid()
+        
+    def forward(self,x, training=False):
+        x = self.l1(x,training)
+        x = self.a1(x)
+        x = self.l2(x)
+        x = self.a2(x)
+        x = self.l3(x)
+        x = self.a3(x)
+        return x
+
+    def predict(self, x):
+        x = torch.tensor(x, dtype=torch.float32)
+        pred = self.forward(x)[:,0]
+        return (pred>=0.5).float()       
+
+class TwoHiddenLayersWithNoise1(Base, nn.Module):
+    def __init__(self, data, x_valid, y_valid, n_train, n_batch, nin=2, nout=1, lr = 0.001):
+        super(TwoHiddenLayersWithNoise1, self).__init__(
+            data, x_valid, y_valid, n_train, n_batch, nin, nout, lr
+        )
+        self._model = MyNoisyModule()
+        self._optimizer = torch.optim.SGD(self.model.parameters(), lr = self._lr)
+
 
 class NoHidden():
     def __init__(self, data, x_valid, y_valid, n_train, n_batch, nin=2, nout=1, lr = 0.001):
@@ -132,39 +236,48 @@ class TwoHiddenLayers():
     def data(self):
         return self._data, self._valid[0], self._valid[1], self._ntrain, self._nbatch
 
-class NoisyLinear(nn.Module):
-    def __init__(self, nin=2, nout=1, nstd=0.1):
-        super.__init__()
-        w = torch.Tensor(nin, nout)
-        self.w= nn.Parameter(w)
-        nn.init.xavier_uniform_(self.w)
-        b=torch.Tensor(nout).fill_(0)
-        self.b = nn.Parameter(b)
-        self.noise_stddev = nstd
+    
+class TwoHiddenLayersWithNoise(nn.Module):
+    def __init__(self, data, x_valid, y_valid, n_train, n_batch, nin=2, nout=1, lr = 0.001):
+        super().__init__()
+        self._ntrain = n_train
+        self._nbatch = n_batch
+        self._data = data
+        self._valid = [x_valid, y_valid]
+        self._lr = lr
+        self._model = MyNoisyModule()
+        self._loss = nn.BCELoss()
+        self._optimizer = torch.optim.SGD(self.model.parameters(), lr = self._lr)
 
-    def forward(self, x, training=False):
-        if training:
-            noise = torch.normal(0.0, self.noise_stddev, x.shape)
-            x_new = torch.add(x, noise)
+    @property
+    def model(self):
+        return self._model
 
-        else:
-            x_new = x
+    @property
+    def loss(self):
+        return self._loss
+   
+    @property
+    def optimizer(self):
+        return self._optimizer
 
-        return torch.add(torch.mm(x_new, self.w), self.b)
-
-class MyNoisyModule(nn.Module):
-    self. __init__(self):
-
+    @property
+    def data(self):
+        return self._data, self._valid[0], self._valid[1], self._ntrain, self._nbatch
 
 data, x_valid, y_valid, n_train, n_batch = create_data()
 
 num_epochs = 200
 
-zerohidden = NoHidden(data, x_valid, y_valid, n_train, n_batch)
-history = train(zerohidden, num_epochs)
+
+zero1 = NoHidden1(data, x_valid, y_valid, n_train, n_batch)
+history = train(zero1, num_epochs)
 visualize_results(history, 'nohidden')
 
-
-twohidden = TwoHiddenLayers(data, x_valid, y_valid, n_train, n_batch, 2, 1, 0.015)
+twohidden = TwoHiddenLayers1(data, x_valid, y_valid, n_train, n_batch, 2, 1, 0.015)
 history = train(twohidden, num_epochs)
 visualize_results(history, 'twohidden')
+
+twohidden_noise = TwoHiddenLayersWithNoise1(data, x_valid, y_valid, n_train, n_batch, 2,1,0.015)
+history = train(twohidden_noise, num_epochs)
+visualize_results(history, 'twohidden_noise')
