@@ -13,7 +13,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
-from torch.distributed import init_process_group, destroy_process_group
+from torch.distributed import init_process_group, destroy_process_group, all_reduce, ReduceOp
 
 import numpy as np
 
@@ -40,6 +40,11 @@ class CeleSmile(object):
         self.optimizer = optimizer
         self.save_every = save_every
         self.model = DDP(model.to(gpu_id), device_ids=[gpu_id]) # set GPU device
+        
+        self._set_up_statistics()        
+
+    def _set_up_statistics(self):
+        self._loss = torch.zeros([1], device=self.gpu_id)
 
     def _run_batch(self, source, targets):
         self.optimizer.zero_grad()
@@ -49,13 +54,31 @@ class CeleSmile(object):
         self.optimizer.step()
 
     def _run_epoch(self, epoch):
-        #b_sz = len(next(iter(self.train_data)))[0]
-        print(f"[GPU{self.gpu_id}] Epoch {epoch} | Batchsize: | Steps: {len(self.train_data)}")
+        b_sz = self.train_data.batch_size
+        print(f"[GPU{self.gpu_id}] Epoch {epoch} | Batchsize: {b_sz}| Steps: {len(self.train_data)}")
         self.train_data.sampler.set_epoch(epoch)
+        self.model.train()
         for source, targets in self.train_data:
             source = source.to(self.gpu_id) # copy to GPU
             targets = targets.reshape(-1,1).float().to(self.gpu_id) # copy to GPU
             self._run_batch(source, targets)
+
+    def _eval_epoch(self, epoch):
+        self.valid_data.sampler.set_epoch(epoch)
+        self.model.eval()
+        
+        with torch.no_grad():
+            for source, targets in self.valid_data:
+                source = source.to(self.gpu_id)
+                targets = targets.reshape(-1,1).float().to(self.gpu_id)
+                output = self.model(source)
+                loss = F.binary_cross_entropy(output, targets)
+                self._loss[0] = loss.item() * targets.size(0) # un-average this
+        # reduce to 
+        all_reduce(self._loss, op=ReduceOp.SUM)
+        # total 
+        divi = self._loss[0]/len(self.valid_data.dataset)
+        print(f'Epoch {epoch} | current loss {divi}')        
 
     def _save_checkpoint(self, epoch):
         ckp = self.model.module.state_dict()
@@ -66,6 +89,7 @@ class CeleSmile(object):
     def train(self, max_epochs: int):
         for epoch in range(max_epochs):
             self._run_epoch(epoch)
+            self._eval_epoch(epoch)
             if self.gpu_id == 0 and epoch % self.save_every == 0:
                 self._save_checkpoint(epoch)
 
@@ -167,7 +191,7 @@ def prepare_dataloader(dataset: torchvision.datasets, batch_size: int):
     return DataLoader(
         dataset,
         batch_size = batch_size,
-        pin_memory = True,
+        pin_memory = True, # pinned memory for asychronous memory copy
         shuffle = False,
         sampler = DistributedSampler(dataset)
     )
